@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+tokio = { version = "1.28", features = ["full"] }
+weframe-server = { path = "./weframe-server" }
+
+[workspace]
+members = ["weframe-server", "weframe-client", "weframe-shared"]
