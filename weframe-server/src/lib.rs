@@ -1,44 +1,54 @@
+use futures::StreamExt;
+use rand::random;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
 use warp::ws::{Message, WebSocket};
-use weframe_shared::EditOperation;
+use warp::Filter;
+use weframe_shared::{EditOperation, VideoProject};
 
-// struct to represent single editing session
-struct Session {
-    clients: HashMap<usize, mpsc::UnboundedSender<Message>>,
-}
-
-// manages all active sessions
-struct SessionManager {
+pub struct SessionManager {
     sessions: HashMap<String, Arc<RwLock<Session>>>,
 }
 
+pub struct Session {
+    clients: HashMap<usize, mpsc::UnboundedSender<Message>>,
+    project: VideoProject,
+}
+
 impl SessionManager {
-    fn new() -> Self {
+    pub fn new() -> Self {
         SessionManager {
             sessions: HashMap::new(),
         }
     }
 
-    async fn get_or_create_session(&mut self, id: &str) -> Arc<RwLock<Session>> {
+    pub async fn get_or_create_session(&mut self, id: &str) -> Arc<RwLock<Session>> {
         self.sessions
             .entry(id.to_string())
             .or_insert_with(|| {
                 Arc::new(RwLock::new(Session {
                     clients: HashMap::new(),
-                    // initialize video project state here
+                    project: VideoProject {
+                        clips: Vec::new(),
+                        duration: Duration::from_secs(300),
+                    },
                 }))
             })
             .clone()
     }
 }
 
-pub async fn handle_websocket(ws: WebSocket, session_id: String, manager: Arc<RwLock<SessionManager>>) {
-    let (ws_sender, mut ws_receiver) = ws.split();
-    let (client_sender, client_receiver) = mpsc::unbounded_channel();
+pub async fn handle_websocket(
+    ws: WebSocket,
+    session_id: String,
+    manager: Arc<RwLock<SessionManager>>,
+) {
+    let (_ws_sender, mut ws_receiver) = ws.split();
+    let (client_sender, _client_receiver) = mpsc::unbounded_channel();
 
-    let client_id = rand::random::<usize>();
+    let client_id = random::<usize>();
 
     // get or create session
     let session = {
@@ -56,15 +66,20 @@ pub async fn handle_websocket(ws: WebSocket, session_id: String, manager: Arc<Rw
     while let Some(result) = ws_receiver.next().await {
         match result {
             Ok(msg) => {
-                if letOk(edit_op) = serde_json::from_str::<EditOperation>(&msg.to_string().unwrap_or_default()) {
-                    // process edit ops
-                    // update video project state
-                    // broadcast new state to all clients
+                if let Ok(edit_op) =
+                    serde_json::from_str::<EditOperation>(&msg.to_str().unwrap_or_default())
+                {
+                    let mut session = session.write().await;
+                    session.project.apply_operation(&edit_op);
+
+                    // broadcast changes to all clients
+                    let update_msg = serde_json::to_string(&edit_op).unwrap();
+                    for (_, sender) in &session.clients {
+                        let _ = sender.send(Message::text(update_msg.clone()));
+                    }
                 }
             }
-            Err(_) => {
-                break;
-            }
+            Err(_) => break,
         }
     }
 
@@ -75,13 +90,15 @@ pub async fn handle_websocket(ws: WebSocket, session_id: String, manager: Arc<Rw
 pub async fn run_server() {
     let session_manager = Arc::new(RwLock::new(SessionManager::new()));
 
-    let routes = warp.path("ws")
+    let routes = warp::path("ws")
         .and(warp::ws())
         .and(warp::path::param())
         .and(warp::any().map(move || session_manager.clone()))
-        .map(|ws: warp::ws::Ws, session_id, manager| {
-            ws.on_upgrade(move |socket| handle_websocket(socket, session_id, manager))
-        });
+        .map(
+            |ws: warp::ws::Ws, session_id: String, manager: Arc<RwLock<SessionManager>>| {
+                ws.on_upgrade(move |socket| handle_websocket(socket, session_id, manager))
+            },
+        );
 
     warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
 }
