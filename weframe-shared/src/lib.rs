@@ -4,15 +4,64 @@ use std::time::Duration;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoClip {
     pub id: String,
+    pub source_file: String,
     pub start_time: Duration,
     pub end_time: Duration,
     pub track: usize,
+    pub effects: Vec<Effect>,
+    pub transition: Option<Transition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Effect {
+    pub id: String,
+    pub effect_type: EffectType,
+    pub start_time: Duration,
+    pub end_time: Duration,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EffectType {
+    ColorAdjustment,
+    Blur,
+    Crop,
+    // etc
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Transition {
+    pub id: String,
+    pub transition_type: TransitionType,
+    pub duration: Duration,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum TransitionType {
+    Fade,
+    Wipe,
+    Dissolve,
+    // etc
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoProject {
     pub clips: Vec<VideoClip>,
     pub duration: Duration,
+    pub collaborators: Vec<Collaborator>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Collaborator {
+    pub id: String,
+    pub name: String,
+    pub cursor_position: CursorPosition,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CursorPosition {
+    pub track: usize,
+    pub time: Duration,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,12 +78,31 @@ pub enum EditOperation {
         new_start_time: Duration,
         new_end_time: Duration,
     },
+    AddEffect {
+        clip_id: String,
+        effect: Effect,
+    },
+    RemoveEffect {
+        clip_id: String,
+        effect_id: String,
+    },
+    AddTransition {
+        clip_id: String,
+        transition: Transition,
+    },
+    RemoveTransition {
+        clip_id: String,
+    },
     SetProjectDuration(Duration),
+    UpdateCollaboratorCursor {
+        collaborator_id: String,
+        new_position: CursorPosition,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OTOperation {
-    pub client_id: usize,
+    pub client_id: String,
     pub client_version: usize,
     pub server_version: usize,
     pub operation: EditOperation,
@@ -67,8 +135,43 @@ impl VideoProject {
                     clip.end_time = *new_end_time;
                 }
             }
+            EditOperation::AddEffect { clip_id, effect } => {
+                if let Some(clip) = self.clips.iter_mut().find(|c| c.id == *clip_id) {
+                    clip.effects.push(effect.clone());
+                }
+            }
+            EditOperation::RemoveEffect { clip_id, effect_id } => {
+                if let Some(clip) = self.clips.iter_mut().find(|c| c.id == *clip_id) {
+                    clip.effects.retain(|e| e.id != *effect_id);
+                }
+            }
+            EditOperation::AddTransition {
+                clip_id,
+                transition,
+            } => {
+                if let Some(clip) = self.clips.iter_mut().find(|c| c.id == *clip_id) {
+                    clip.transition = Some(transition.clone());
+                }
+            }
+            EditOperation::RemoveTransition { clip_id } => {
+                if let Some(clip) = self.clips.iter_mut().find(|c| c.id == *clip_id) {
+                    clip.transition = None;
+                }
+            }
             EditOperation::SetProjectDuration(new_duration) => {
                 self.duration = *new_duration;
+            }
+            EditOperation::UpdateCollaboratorCursor {
+                collaborator_id,
+                new_position,
+            } => {
+                if let Some(collaborator) = self
+                    .collaborators
+                    .iter_mut()
+                    .find(|c| c.id == *collaborator_id)
+                {
+                    collaborator.cursor_position = new_position.clone();
+                }
             }
         }
     }
@@ -80,10 +183,9 @@ impl VideoProject {
     ) -> OTOperation {
         match (&server_op.operation, &client_op.operation) {
             (EditOperation::AddClip(server_clip), EditOperation::AddClip(client_clip)) => {
-                // fpr adding clips, prefer the client operation but adjust the start time
                 if server_op.client_id < client_op.client_id {
                     OTOperation {
-                        client_id: client_op.client_id,
+                        client_id: client_op.client_id.clone(),
                         client_version: client_op.client_version,
                         server_version: server_op.server_version + 1,
                         operation: EditOperation::AddClip(VideoClip {
@@ -98,15 +200,13 @@ impl VideoProject {
             }
             (EditOperation::RemoveClip(server_id), EditOperation::RemoveClip(client_id)) => {
                 if server_id == client_id {
-                    // if both try to remove the same clip, only the server operation is applied
                     OTOperation {
-                        client_id: client_op.client_id,
+                        client_id: client_op.client_id.clone(),
                         client_version: client_op.client_version,
                         server_version: server_op.server_version,
                         operation: EditOperation::RemoveClip(client_id.clone()),
                     }
                 } else {
-                    // if different clips, both operations are kept
                     client_op.clone()
                 }
             }
@@ -115,10 +215,8 @@ impl VideoProject {
                 EditOperation::MoveClip { id: client_id, .. },
             ) => {
                 if server_id == client_id {
-                    // if moving the same clip, prefer the server operation
                     server_op.clone()
                 } else {
-                    // if different clips, both operations are kept
                     client_op.clone()
                 }
             }
@@ -127,11 +225,10 @@ impl VideoProject {
                 EditOperation::TrimClip { id: client_id, .. },
             ) => {
                 if server_id == client_id {
-                    // if trimming the same clip, merge the operations
                     let (_, server_start, server_end) = server_op.operation.as_trim_clip();
                     let (_, client_start, client_end) = client_op.operation.as_trim_clip();
                     OTOperation {
-                        client_id: client_op.client_id,
+                        client_id: client_op.client_id.clone(),
                         client_version: client_op.client_version,
                         server_version: server_op.server_version,
                         operation: EditOperation::TrimClip {
@@ -141,23 +238,17 @@ impl VideoProject {
                         },
                     }
                 } else {
-                    // if different clips, both operations are kept
                     client_op.clone()
                 }
             }
             (EditOperation::SetProjectDuration(_), EditOperation::SetProjectDuration(_)) => {
-                // for project duration, prefer the server operation
                 server_op.clone()
             }
-            _ => {
-                // for everything else, prefer the client operation
-                client_op.clone()
-            }
+            _ => client_op.clone(),
         }
     }
 }
 
-// helper to extract fields of a TrimClip operation
 impl EditOperation {
     fn as_trim_clip(&self) -> (&String, &Duration, &Duration) {
         match self {

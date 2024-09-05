@@ -6,14 +6,14 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
 use warp::ws::{Message, WebSocket};
 use warp::Filter;
-use weframe_shared::{OTOperation, VideoProject};
+use weframe_shared::{OTOperation, VideoProject, Collaborator, CursorPosition};
 
 pub struct SessionManager {
     sessions: HashMap<String, Arc<RwLock<Session>>>,
 }
 
 pub struct Session {
-    clients: HashMap<usize, mpsc::UnboundedSender<Message>>,
+    clients: HashMap<String, mpsc::UnboundedSender<Message>>,
     project: VideoProject,
     server_version: usize,
     last_activity: Instant,
@@ -35,6 +35,7 @@ impl SessionManager {
                     project: VideoProject {
                         clips: Vec::new(),
                         duration: Duration::from_secs(300),
+                        collaborators: Vec::new(),
                     },
                     server_version: 0,
                     last_activity: Instant::now(),
@@ -61,7 +62,7 @@ pub async fn handle_websocket(
     let (mut ws_sender, mut ws_receiver) = ws.split();
     let (client_sender, mut client_receiver) = mpsc::unbounded_channel();
 
-    let client_id = random::<usize>();
+    let client_id = format!("user-{}", random::<u32>());
 
     // get or create session
     let session = {
@@ -72,8 +73,18 @@ pub async fn handle_websocket(
     // add client to session
     {
         let mut session = session.write().await;
-        session.clients.insert(client_id, client_sender);
+        session.clients.insert(client_id.clone(), client_sender);
         session.last_activity = Instant::now();
+        
+        // add collaborator to project
+        session.project.collaborators.push(Collaborator {
+            id: client_id.clone(),
+            name: format!("User {}", client_id),
+            cursor_position: CursorPosition {
+                track: 0,
+                time: Duration::from_secs(0),
+            },
+        });
     }
 
     // handle incoming messages
@@ -87,7 +98,7 @@ pub async fn handle_websocket(
                             session.last_activity = Instant::now();
 
                             let server_op = OTOperation {
-                                client_id,
+                                client_id: client_id.clone(),
                                 client_version: client_op.client_version,
                                 server_version: session.server_version,
                                 operation: client_op.operation.clone(),
@@ -116,8 +127,10 @@ pub async fn handle_websocket(
         }
     }
 
+    // remove client from session when disconnected
     let mut session = session.write().await;
     session.clients.remove(&client_id);
+    session.project.collaborators.retain(|c| c.id != client_id);
 }
 
 pub async fn run_server() {
