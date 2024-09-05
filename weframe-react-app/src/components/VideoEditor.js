@@ -1,5 +1,4 @@
-// src/components/VideoEditor.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import init, { WeframeClient } from 'weframe-client';
 
 const VideoEditor = () => {
@@ -14,12 +13,12 @@ const VideoEditor = () => {
         }).catch(console.error);
     }, []);
 
-    const updateProject = (clientInstance) => {
+    const updateProject = useCallback((clientInstance) => {
         const projectData = clientInstance.get_project();
         setProject(projectData);
-    };
+    }, []);
 
-    const addClip = () => {
+    const addClip = useCallback(() => {
         if (client) {
             const newClip = {
                 id: Math.random().toString(36).substr(2, 9),
@@ -29,18 +28,21 @@ const VideoEditor = () => {
             };
             const operation = {
                 client_id: 1, // This should be dynamically assigned
-                client_version: 1, // This should be incremented
+                client_version: project.clips.length + 1,
                 server_version: 0, // This should be updated based on server responses
                 operation: { AddClip: newClip },
             };
             try {
                 client.send_operation(operation);
-                updateProject(client);
+                setProject(prevProject => ({
+                    ...prevProject,
+                    clips: [...prevProject.clips, newClip]
+                }));
             } catch (error) {
                 console.error("Failed to send operation:", error);
             }
         }
-    };
+    }, [client, project.clips.length]);
 
     return (
         <div>

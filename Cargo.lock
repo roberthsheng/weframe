@@ -1137,6 +1137,7 @@ name = "weframe-client"
 version = "0.1.0"
 dependencies = [
  "js-sys",
+ "parking_lot",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
