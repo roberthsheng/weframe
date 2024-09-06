@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import init, { WeframeClient } from 'weframe-client';
+import VideoPreview from './VideoPreview';
 
 const TRACK_HEIGHT = 50;
 const PIXELS_PER_SECOND = 50;
@@ -13,6 +14,7 @@ const VideoEditor = () => {
     });
     const [draggingClip, setDraggingClip] = useState(null);
     const [resizingClip, setResizingClip] = useState(null);
+    const [currentTime, setCurrentTime] = useState(0);
     const timelineRef = useRef(null);
 
     useEffect(() => {
@@ -31,32 +33,20 @@ const VideoEditor = () => {
 
     const addClip = useCallback(() => {
         if (client) {
-            const newClip = {
-                id: Math.random().toString(36).substr(2, 9),
-                source_file: "example.mp4",
-                start_time: { secs: 0, nanos: 0 },
-                end_time: { secs: 10, nanos: 0 },
-                track: project.clips.length % 3, // Use multiple tracks
-                effects: [],
-                transition: null,
-            };
-            const operation = {
-                client_id: "user1",
-                client_version: project.clips.length + 1,
-                server_version: 0,
-                operation: { AddClip: newClip },
-            };
+            const startTime = 0;
+            const endTime = 10;
+            const track = project.clips.length % 3;
+
+            const placeholderVideo = "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4";
+
             try {
-                client.send_operation(operation);
-                setProject(prevProject => ({
-                    ...prevProject,
-                    clips: [...prevProject.clips, newClip]
-                }));
+                client.add_clip(startTime, endTime, track, placeholderVideo);
+                updateProject(client);
             } catch (error) {
-                console.error("Failed to send operation:", error);
+                console.error("Failed to add clip:", error);
             }
         }
-    }, [client, project.clips]);
+    }, [client, project.clips.length, updateProject]);
 
     const updateCursorPosition = useCallback((e) => {
         if (client && timelineRef.current) {
@@ -123,27 +113,32 @@ const VideoEditor = () => {
     }, [draggingClip, resizingClip, updateCursorPosition]);
 
     const handleMouseUp = useCallback(() => {
-        if (draggingClip || resizingClip) {
-            // Send update operation to server
-            // This is a simplified version, you'll need to implement the actual operation
-            const updatedClip = project.clips.find(c => c.id === (draggingClip?.clip.id || resizingClip?.clip.id));
-            const operation = {
-                client_id: "user1",
-                client_version: project.clips.length,
-                server_version: 0,
-                operation: {
-                    MoveClip: {
-                        id: updatedClip.id,
-                        new_start_time: updatedClip.start_time,
-                        new_track: updatedClip.track
-                    }
-                },
-            };
-            client.send_operation(operation);
+        if (client) {
+            if (draggingClip) {
+                const updatedClip = project.clips.find(c => c.id === draggingClip.clip.id);
+                try {
+                    client.move_clip(updatedClip.id, updatedClip.start_time.secs, updatedClip.track);
+                    updateProject(client);
+                } catch (error) {
+                    console.error("Failed to move clip:", error);
+                }
+            } else if (resizingClip) {
+                const updatedClip = project.clips.find(c => c.id === resizingClip.clip.id);
+                try {
+                    client.resize_clip(updatedClip.id, updatedClip.end_time.secs);
+                    updateProject(client);
+                } catch (error) {
+                    console.error("Failed to resize clip:", error);
+                }
+            }
         }
         setDraggingClip(null);
         setResizingClip(null);
-    }, [client, draggingClip, resizingClip, project.clips]);
+    }, [client, draggingClip, resizingClip, project.clips, updateProject]);
+
+    const handleTimeUpdate = (newTime) => {
+        setCurrentTime(newTime);
+    };
 
     const renderTimeline = () => {
         return (
@@ -180,6 +175,15 @@ const VideoEditor = () => {
                         ))}
                     </div>
                 ))}
+                <div className="playhead" style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: `${currentTime * PIXELS_PER_SECOND}px`,
+                    width: '2px',
+                    height: '100%',
+                    backgroundColor: 'red',
+                    pointerEvents: 'none',
+                }} />
             </div>
         );
     };
@@ -190,6 +194,11 @@ const VideoEditor = () => {
             <div className="toolbar">
                 <button onClick={addClip}>Add Clip</button>
             </div>
+            <VideoPreview
+                currentTime={currentTime}
+                clips={project.clips}
+                onTimeUpdate={handleTimeUpdate}
+            />
             <div
                 className="timeline-container"
                 ref={timelineRef}
