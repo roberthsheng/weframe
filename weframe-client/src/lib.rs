@@ -2,13 +2,16 @@ use serde_wasm_bindgen::{from_value, to_value};
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 use web_sys::{console, MessageEvent, WebSocket};
-use weframe_shared::{Collaborator, CursorPosition, EditOperation, OTOperation, VideoProject};
+use weframe_shared::{
+    Collaborator, CursorPosition, EditOperation, OTOperation, VideoClip, VideoProject,
+};
 
 #[wasm_bindgen]
 pub struct WeframeClient {
     ws: WebSocket,
     project: Arc<Mutex<VideoProject>>,
     client_id: String,
+    client_version: usize,
 }
 
 #[wasm_bindgen]
@@ -34,6 +37,7 @@ impl WeframeClient {
             ws,
             project,
             client_id: client_id.to_string(),
+            client_version: 0,
         };
 
         client.setup_ws_handlers();
@@ -90,6 +94,71 @@ impl WeframeClient {
                 },
             },
         };
+        self.send_operation(to_value(&operation).unwrap())
+    }
+
+    #[wasm_bindgen]
+    pub fn move_clip(
+        &mut self,
+        clip_id: String,
+        new_start_time: f64,
+        new_track: usize,
+    ) -> Result<(), JsValue> {
+        let operation = OTOperation {
+            client_id: self.client_id.clone(),
+            client_version: self.client_version,
+            server_version: 0,
+            operation: EditOperation::MoveClip {
+                id: clip_id,
+                new_start_time: std::time::Duration::from_secs_f64(new_start_time),
+                new_track,
+            },
+        };
+        self.client_version += 1;
+        self.send_operation(to_value(&operation).unwrap())
+    }
+
+    #[wasm_bindgen]
+    pub fn resize_clip(&mut self, clip_id: String, new_end_time: f64) -> Result<(), JsValue> {
+        let operation = OTOperation {
+            client_id: self.client_id.clone(),
+            client_version: self.client_version,
+            server_version: 0,
+            operation: EditOperation::TrimClip {
+                id: clip_id,
+                new_start_time: std::time::Duration::from_secs(0),
+                new_end_time: std::time::Duration::from_secs_f64(new_end_time),
+            },
+        };
+        self.client_version += 1;
+        self.send_operation(to_value(&operation).unwrap())
+    }
+
+    #[wasm_bindgen]
+    pub fn add_clip(
+        &mut self,
+        start_time: f64,
+        end_time: f64,
+        track: usize,
+        source_file: &str,
+    ) -> Result<(), JsValue> {
+        let new_clip = VideoClip {
+            id: format!("clip-{}", self.client_version),
+            source_file: source_file.to_string(),
+            start_time: std::time::Duration::from_secs_f64(start_time),
+            end_time: std::time::Duration::from_secs_f64(end_time),
+            track,
+            effects: Vec::new(),
+            transition: None,
+        };
+
+        let operation = OTOperation {
+            client_id: self.client_id.clone(),
+            client_version: self.client_version,
+            server_version: 0, // This should be updated based on server responses
+            operation: EditOperation::AddClip(new_clip),
+        };
+        self.client_version += 1;
         self.send_operation(to_value(&operation).unwrap())
     }
 }

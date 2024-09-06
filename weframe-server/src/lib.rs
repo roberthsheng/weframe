@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
 use warp::ws::{Message, WebSocket};
 use warp::Filter;
-use weframe_shared::{OTOperation, VideoProject, Collaborator, CursorPosition};
+use weframe_shared::{OTOperation, VideoProject, Collaborator, CursorPosition, EditOperation};
 
 pub struct SessionManager {
     sessions: HashMap<String, Arc<RwLock<Session>>>,
@@ -112,6 +112,16 @@ pub async fn handle_websocket(
                             let update_msg = serde_json::to_string(&transformed_op).unwrap();
                             for (_, sender) in &session.clients {
                                 let _ = sender.send(Message::text(update_msg.clone()));
+                            }
+
+                            // handle specific operation types
+                            match &transformed_op.operation {
+                                EditOperation::UpdateCollaboratorCursor { collaborator_id, new_position } => {
+                                    if let Some(collaborator) = session.project.collaborators.iter_mut().find(|c| c.id == *collaborator_id) {
+                                        collaborator.cursor_position = new_position.clone();
+                                    }
+                                },
+                                _ => {},
                             }
                         }
                     }
