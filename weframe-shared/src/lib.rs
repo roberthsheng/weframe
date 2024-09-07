@@ -23,10 +23,11 @@ pub struct Effect {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EffectType {
-    ColorAdjustment,
-    Blur,
-    Crop,
-    // etc
+    Brightness,
+    Contrast,
+    Saturation,
+    Hue,
+    Grayscale,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

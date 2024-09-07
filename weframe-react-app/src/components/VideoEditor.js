@@ -15,7 +15,9 @@ const VideoEditor = () => {
     const [draggingClip, setDraggingClip] = useState(null);
     const [resizingClip, setResizingClip] = useState(null);
     const [currentTime, setCurrentTime] = useState(0);
+    const [isPlaying, setIsPlaying] = useState(false);
     const timelineRef = useRef(null);
+    const playIntervalRef = useRef(null);
 
     useEffect(() => {
         init().then(() => {
@@ -23,6 +25,12 @@ const VideoEditor = () => {
             setClient(newClient);
             updateProject(newClient);
         }).catch(console.error);
+
+        return () => {
+            if (playIntervalRef.current) {
+                clearInterval(playIntervalRef.current);
+            }
+        };
     }, []);
 
     const updateProject = useCallback((clientInstance) => {
@@ -140,6 +148,46 @@ const VideoEditor = () => {
         setCurrentTime(newTime);
     };
 
+    const togglePlayPause = () => {
+        setIsPlaying(prevIsPlaying => !prevIsPlaying);
+    };
+
+    useEffect(() => {
+        if (isPlaying) {
+            playIntervalRef.current = setInterval(() => {
+                setCurrentTime(prev => {
+                    const newTime = prev + 0.1;
+                    return newTime >= project.duration.secs ? 0 : newTime;
+                });
+            }, 100);
+        } else if (playIntervalRef.current) {
+            clearInterval(playIntervalRef.current);
+        }
+
+        return () => {
+            if (playIntervalRef.current) {
+                clearInterval(playIntervalRef.current);
+            }
+        };
+    }, [isPlaying, project.duration.secs]);
+
+    const handleScrubberMouseDown = useCallback((e) => {
+        const rect = timelineRef.current.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        setCurrentTime(x / PIXELS_PER_SECOND);
+    }, []);
+
+    const applyEffect = useCallback((clipId, effectType, value) => {
+        if (client) {
+            try {
+                client.apply_effect(clipId, effectType, value);
+                updateProject(client);
+            } catch (error) {
+                console.error("Failed to apply effect:", error);
+            }
+        }
+    }, [client, updateProject]);
+
     const renderTimeline = () => {
         return (
             <div className="tracks" style={{ height: `${3 * TRACK_HEIGHT}px` }}>
@@ -171,6 +219,15 @@ const VideoEditor = () => {
                                     backgroundColor: 'blue',
                                     cursor: 'ew-resize',
                                 }} />
+                                <button onClick={() => applyEffect(clip.id, 'brightness', 1.2)}>+Bright</button>
+                                <button onClick={() => applyEffect(clip.id, 'brightness', 0.8)}>-Bright</button>
+                                <button onClick={() => applyEffect(clip.id, 'contrast', 1.2)}>+Contrast</button>
+                                <button onClick={() => applyEffect(clip.id, 'contrast', 0.8)}>-Contrast</button>
+                                <button onClick={() => applyEffect(clip.id, 'saturation', 1.2)}>+Saturation</button>
+                                <button onClick={() => applyEffect(clip.id, 'saturation', 0.8)}>-Saturation</button>
+                                <button onClick={() => applyEffect(clip.id, 'hue', 30)}>+Hue</button>
+                                <button onClick={() => applyEffect(clip.id, 'hue', -30)}>-Hue</button>
+                                <button onClick={() => applyEffect(clip.id, 'grayscale', 1)}>Grayscale</button>
                             </div>
                         ))}
                     </div>
@@ -193,11 +250,13 @@ const VideoEditor = () => {
             <h1>WeFrame Video Editor</h1>
             <div className="toolbar">
                 <button onClick={addClip}>Add Clip</button>
+                <button onClick={togglePlayPause}>{isPlaying ? 'Pause' : 'Play'}</button>
             </div>
             <VideoPreview
                 currentTime={currentTime}
                 clips={project.clips}
                 onTimeUpdate={handleTimeUpdate}
+                isPlaying={isPlaying}
             />
             <div
                 className="timeline-container"
@@ -205,6 +264,7 @@ const VideoEditor = () => {
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
                 onMouseLeave={handleMouseUp}
+                onMouseDown={handleScrubberMouseDown}
                 style={{ position: 'relative', height: '300px', border: '1px solid black', overflowX: 'auto', overflowY: 'hidden' }}
             >
                 {renderTimeline()}

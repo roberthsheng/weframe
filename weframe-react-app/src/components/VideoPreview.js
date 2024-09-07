@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 
-const VideoPreview = ({ currentTime, clips, onTimeUpdate }) => {
+const VideoPreview = ({ currentTime, clips, onTimeUpdate, isPlaying }) => {
     const videoRef = useRef(null);
     const [activeClip, setActiveClip] = useState(null);
     const [error, setError] = useState(null);
@@ -18,15 +18,19 @@ const VideoPreview = ({ currentTime, clips, onTimeUpdate }) => {
             if (activeClip.source_file) {
                 videoRef.current.src = activeClip.source_file;
                 videoRef.current.currentTime = currentTime - activeClip.start_time.secs;
-                videoRef.current.play().catch(e => {
-                    console.error("Error playing video:", e);
-                    setError("Failed to play video");
-                });
+                if (isPlaying) {
+                    videoRef.current.play().catch(e => {
+                        console.error("Error playing video:", e);
+                        setError("Failed to play video");
+                    });
+                } else {
+                    videoRef.current.pause();
+                }
             } else {
                 setError("No video source available for this clip");
             }
         }
-    }, [activeClip, currentTime]);
+    }, [activeClip, currentTime, isPlaying]);
 
     const handleTimeUpdate = () => {
         if (videoRef.current && activeClip) {
@@ -34,6 +38,34 @@ const VideoPreview = ({ currentTime, clips, onTimeUpdate }) => {
             onTimeUpdate(newTime);
         }
     };
+
+    const applyEffects = () => {
+        if (videoRef.current && activeClip && activeClip.effects) {
+            let filterString = '';
+            activeClip.effects.forEach(effect => {
+                switch (effect.effect_type) {
+                    case 'brightness':
+                        filterString += `brightness(${effect.value}) `;
+                        break;
+                    case 'contrast':
+                        filterString += `contrast(${effect.value}) `;
+                        break;
+                    case 'saturation':
+                        filterString += `saturate(${effect.value}) `;
+                        break;
+                    case 'hue':
+                        filterString += `hue-rotate(${effect.value}deg) `;
+                        break;
+                    case 'grayscale':
+                        filterString += `grayscale(${effect.value}) `;
+                        break;
+                }
+            });
+            videoRef.current.style.filter = filterString;
+        }
+    };
+
+    useEffect(applyEffects, [activeClip]);
 
     return (
         <div className="video-preview">

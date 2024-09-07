@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 use web_sys::{console, MessageEvent, WebSocket};
 use weframe_shared::{
-    Collaborator, CursorPosition, EditOperation, OTOperation, VideoClip, VideoProject,
+    Collaborator, CursorPosition, EditOperation, Effect, OTOperation, VideoClip, VideoProject, EffectType,
 };
 
 #[wasm_bindgen]
@@ -157,6 +157,43 @@ impl WeframeClient {
             client_version: self.client_version,
             server_version: 0, // This should be updated based on server responses
             operation: EditOperation::AddClip(new_clip),
+        };
+        self.client_version += 1;
+        self.send_operation(to_value(&operation).unwrap())
+    }
+
+    #[wasm_bindgen]
+    pub fn apply_effect(
+        &mut self,
+        clip_id: &str,
+        effect_type: &str,
+        value: f64,
+    ) -> Result<(), JsValue> {
+        let effect_type = match effect_type {
+            "brightness" => EffectType::Brightness,
+            "contrast" => EffectType::Contrast,
+            "saturation" => EffectType::Saturation,
+            "hue" => EffectType::Hue,
+            "grayscale" => EffectType::Grayscale,
+            _ => return Err(JsValue::from_str("Unsupported effect type")),
+        };
+
+        let effect = Effect {
+            id: format!("effect-{}", self.client_version),
+            effect_type,
+            start_time: std::time::Duration::from_secs(0),
+            end_time: std::time::Duration::from_secs(0),
+            parameters: serde_json::json!({ "value": value }),
+        };
+
+        let operation = OTOperation {
+            client_id: self.client_id.clone(),
+            client_version: self.client_version,
+            server_version: 0,
+            operation: EditOperation::AddEffect {
+                clip_id: clip_id.to_string(),
+                effect,
+            },
         };
         self.client_version += 1;
         self.send_operation(to_value(&operation).unwrap())
