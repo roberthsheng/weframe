@@ -48,7 +48,9 @@ const VideoEditor = () => {
             const placeholderVideo = "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4";
 
             try {
+                console.log("Adding clip:", { startTime, endTime, track, placeholderVideo });
                 client.add_clip(startTime, endTime, track, placeholderVideo);
+                console.log("Clip added successfully");
                 updateProject(client);
             } catch (error) {
                 console.error("Failed to add clip:", error);
