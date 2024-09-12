@@ -1,6 +1,8 @@
+// VideoEditor.js
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import init, { WeframeClient } from 'weframe-client';
 import VideoPreview from './VideoPreview';
+import _ from 'lodash';
 
 const TRACK_HEIGHT = 50;
 const PIXELS_PER_SECOND = 50;
@@ -19,25 +21,27 @@ const VideoEditor = () => {
     const timelineRef = useRef(null);
     const playIntervalRef = useRef(null);
 
-    useEffect(() => {
-        init().then(() => {
-            const newClient = new WeframeClient('ws://localhost:3030/ws/default-session', 'user1', 'User 1');
-            setClient(newClient);
-            updateProject(newClient);
-        }).catch(console.error);
-
-        return () => {
-            if (playIntervalRef.current) {
-                clearInterval(playIntervalRef.current);
-            }
-        };
-    }, []);
-
     const updateProject = useCallback((clientInstance) => {
         const projectData = clientInstance.get_project();
         console.log('Received project data:', projectData);
-        setProject(projectData);
+        setProject(prevProject => {
+            if (!_.isEqual(prevProject, projectData)) {
+                return projectData;
+            }
+            return prevProject;
+        });
     }, []);
+
+    useEffect(() => {
+        init().then(() => {
+            console.log("WebAssembly module initialized successfully");
+            const newClient = new WeframeClient('ws://localhost:3030/ws/default-session', 'user1', 'User 1');
+            setClient(newClient);
+            updateProject(newClient);
+        }).catch(error => {
+            console.error("Failed to initialize WebAssembly module:", error);
+        });
+    }, [updateProject]);
 
     const addClip = useCallback(() => {
         if (client) {
@@ -47,8 +51,8 @@ const VideoEditor = () => {
 
             const placeholderVideo = "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4";
 
+            console.log("Adding clip:", { startTime, endTime, track, placeholderVideo });
             try {
-                console.log("Adding clip:", { startTime, endTime, track, placeholderVideo });
                 client.add_clip(startTime, endTime, track, placeholderVideo);
                 console.log("Clip added successfully");
                 updateProject(client);
@@ -180,13 +184,17 @@ const VideoEditor = () => {
     }, []);
 
     const applyEffect = useCallback((clipId, effectType, value) => {
+        console.log(`Attempting to apply effect: ${effectType} with value ${value} to clip ${clipId}`);
         if (client) {
             try {
                 client.apply_effect(clipId, effectType, value);
+                console.log('Effect applied successfully, updating project');
                 updateProject(client);
             } catch (error) {
                 console.error("Failed to apply effect:", error);
             }
+        } else {
+            console.error("Client is not initialized");
         }
     }, [client, updateProject]);
 
@@ -194,10 +202,10 @@ const VideoEditor = () => {
         return (
             <div className="tracks" style={{ height: `${3 * TRACK_HEIGHT}px` }}>
                 {[0, 1, 2].map(trackIndex => (
-                    <div key={trackIndex} className="track" style={{ height: `${TRACK_HEIGHT}px` }}>
-                        {project.clips.filter(clip => clip.track === trackIndex).map((clip) => (
+                    <div key={`track-${trackIndex}`} className="track" style={{ height: `${TRACK_HEIGHT}px` }}>
+                        {project.clips.filter(clip => clip.track === trackIndex).map((clip, index) => (
                             <div
-                                key={clip.id}
+                                key={`${clip.id}-${index}`}
                                 className="clip"
                                 onMouseDown={(e) => handleClipMouseDown(e, clip)}
                                 style={{
@@ -230,6 +238,7 @@ const VideoEditor = () => {
                                 <button onClick={() => applyEffect(clip.id, 'hue', 30)}>+Hue</button>
                                 <button onClick={() => applyEffect(clip.id, 'hue', -30)}>-Hue</button>
                                 <button onClick={() => applyEffect(clip.id, 'grayscale', 1)}>Grayscale</button>
+                                <button onClick={() => applyEffect(clip.id, 'grayscale', 0)}>Color</button>
                             </div>
                         ))}
                     </div>

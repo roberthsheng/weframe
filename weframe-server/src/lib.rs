@@ -1,3 +1,4 @@
+// weframe-server/src/lib.rs
 use futures::{SinkExt, StreamExt};
 use rand::random;
 use std::collections::HashMap;
@@ -6,7 +7,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
 use warp::ws::{Message, WebSocket};
 use warp::Filter;
-use weframe_shared::{OTOperation, VideoProject, Collaborator, CursorPosition, EditOperation};
+use weframe_shared::{Collaborator, CursorPosition, EditOperation, OTOperation, VideoProject};
 
 pub struct SessionManager {
     sessions: HashMap<String, Arc<RwLock<Session>>>,
@@ -75,7 +76,7 @@ pub async fn handle_websocket(
         let mut session = session.write().await;
         session.clients.insert(client_id.clone(), client_sender);
         session.last_activity = Instant::now();
-        
+
         // add collaborator to project
         session.project.collaborators.push(Collaborator {
             id: client_id.clone(),
@@ -159,6 +160,11 @@ pub async fn run_server() {
         }
     });
 
+    let cors = warp::cors()
+        .allow_any_origin()
+        .allow_methods(vec!["GET", "POST", "OPTIONS"])
+        .allow_headers(vec!["Content-Type"]);
+
     let routes = warp::path("ws")
         .and(warp::ws())
         .and(warp::path::param())
@@ -167,7 +173,8 @@ pub async fn run_server() {
             |ws: warp::ws::Ws, session_id: String, manager: Arc<RwLock<SessionManager>>| {
                 ws.on_upgrade(move |socket| handle_websocket(socket, session_id, manager))
             },
-        );
+        )
+        .with(cors);
 
     warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
 }

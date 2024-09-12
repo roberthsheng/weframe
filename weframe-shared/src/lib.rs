@@ -1,3 +1,4 @@
+// weframe-shared/src/lib.rs
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -18,10 +19,10 @@ pub struct Effect {
     pub effect_type: EffectType,
     pub start_time: Duration,
     pub end_time: Duration,
-    pub parameters: serde_json::Value,
+    pub parameters: std::collections::HashMap<String, f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum EffectType {
     Brightness,
     Contrast,
@@ -219,6 +220,24 @@ impl VideoProject {
                     server_op.clone()
                 } else {
                     client_op.clone()
+                }
+            }
+            (
+                EditOperation::AddEffect {
+                    clip_id: server_clip_id,
+                    effect: _server_effect,
+                },
+                EditOperation::AddEffect {
+                    clip_id: client_clip_id,
+                    effect: _client_effect,
+                },
+            ) => {
+                if server_clip_id == client_clip_id {
+                    // If both operations are adding an effect to the same clip, keep the client's effect
+                    client_op.clone()
+                } else {
+                    // If they're for different clips, both effects can be applied
+                    server_op.clone()
                 }
             }
             (
