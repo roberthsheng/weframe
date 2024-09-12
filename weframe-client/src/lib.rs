@@ -1,7 +1,8 @@
-// weframe-client/src/lib.rs
 use js_sys::Object;
 use serde_wasm_bindgen::{from_value, to_value};
-use std::sync::{Arc, Mutex};
+use std::cell::RefCell;
+use std::rc::Rc;
+use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 use web_sys::{console, MessageEvent, WebSocket};
 use weframe_shared::{
@@ -12,9 +13,9 @@ use weframe_shared::{
 #[wasm_bindgen]
 pub struct WeframeClient {
     ws: WebSocket,
-    project: Arc<Mutex<VideoProject>>,
+    project: Rc<RefCell<VideoProject>>,
     client_id: String,
-    client_version: usize,
+    client_version: Rc<RefCell<usize>>,
 }
 
 #[wasm_bindgen]
@@ -33,7 +34,7 @@ impl WeframeClient {
             e
         })?;
 
-        let project = Arc::new(Mutex::new(VideoProject {
+        let project = Rc::new(RefCell::new(VideoProject {
             clips: Vec::new(),
             duration: std::time::Duration::from_secs(300),
             collaborators: vec![Collaborator {
@@ -50,7 +51,7 @@ impl WeframeClient {
             ws,
             project,
             client_id: client_id.to_string(),
-            client_version: 0,
+            client_version: Rc::new(RefCell::new(0)),
         };
 
         client.setup_ws_handlers();
@@ -68,7 +69,7 @@ impl WeframeClient {
                 operation
             )));
             // Apply the operation to the local project state
-            let mut project = project.lock().unwrap();
+            let mut project = project.borrow_mut();
             project.apply_operation(&operation.operation);
         }) as Box<dyn FnMut(_)>);
         self.ws
@@ -94,7 +95,7 @@ impl WeframeClient {
         let operation: OTOperation = from_value(operation)
             .map_err(|e| JsValue::from_str(&format!("Failed to parse operation: {:?}", e)))?;
         {
-            let mut project = self.project.lock().unwrap();
+            let mut project = self.project.borrow_mut();
             project.apply_operation(&operation.operation);
         }
 
@@ -104,78 +105,81 @@ impl WeframeClient {
     }
 
     pub fn get_project(&self) -> JsValue {
-        let project = self.project.lock().unwrap();
-        web_sys::console::log_1(&JsValue::from_str(&format!(
-            "Getting project. Number of clips: {}",
-            project.clips.len()
-        )));
-
-        for (index, clip) in project.clips.iter().enumerate() {
-            web_sys::console::log_1(&JsValue::from_str(&format!(
-                "Clip {}: id: {}, effects: {:?}",
-                index, clip.id, clip.effects
-            )));
-        }
-
-        let project_value = to_value(&*project).unwrap();
-        web_sys::console::log_1(&JsValue::from_str(&format!(
-            "Project serialized to JsValue: {:?}",
-            project_value
-        )));
-
-        project_value
+        let project = self.project.borrow();
+        to_value(&*project).unwrap()
     }
 
     #[wasm_bindgen]
-    pub fn update_cursor_position(&mut self, track: usize, time: f64) -> Result<(), JsValue> {
-        console::log_1(&JsValue::from_str(
-            "update_cursor_position called from JavaScript",
-        ));
-
-        let mut project = self
-            .project
-            .lock()
-            .map_err(|_| JsValue::from_str("Failed to lock project"))?;
-
-        let collaborator = project
-            .collaborators
-            .iter_mut()
-            .find(|c| c.id == self.client_id)
-            .ok_or_else(|| JsValue::from_str("Collaborator not found"))?;
-
-        collaborator.cursor_position = CursorPosition {
+    pub fn update_cursor_position(&self, track: usize, time: f64) -> Result<(), JsValue> {
+        let new_position = CursorPosition {
             track,
             time: std::time::Duration::from_secs_f64(time),
         };
 
+        let mut project = self.project.borrow_mut();
+        if let Some(collaborator) = project
+            .collaborators
+            .iter_mut()
+            .find(|c| c.id == self.client_id)
+        {
+            collaborator.cursor_position = new_position.clone();
+        }
+
         let operation = OTOperation {
             client_id: self.client_id.clone(),
-            client_version: self.client_version,
+            client_version: *self.client_version.borrow(),
             server_version: 0,
             operation: EditOperation::UpdateCollaboratorCursor {
                 collaborator_id: self.client_id.clone(),
-                new_position: collaborator.cursor_position.clone(),
+                new_position,
             },
         };
 
-        self.client_version += 1;
-        self.send_operation(
-            to_value(&operation)
-                .map_err(|e| JsValue::from_str(&format!("Serialization error: {:?}", e)))?,
-        )
+        *self.client_version.borrow_mut() += 1;
+        self.send_operation(to_value(&operation).unwrap())
     }
 
     #[wasm_bindgen]
     pub fn move_clip(
-        &mut self,
+        &self,
         clip_id: &str,
         new_start_time: f64,
         new_track: usize,
     ) -> Result<(), JsValue> {
-        let mut project = self
-            .project
-            .lock()
-            .map_err(|_| JsValue::from_str("Failed to lock project"))?;
+        let mut project = self.project.borrow_mut();
+
+        let clip_index = project
+            .clips
+            .iter()
+            .position(|c| c.id == clip_id)
+            .ok_or_else(|| JsValue::from_str("Clip not found"))?;
+
+        let mut clip = project.clips.remove(clip_index);
+        let duration = clip.end_time - clip.start_time;
+        clip.start_time = std::time::Duration::from_secs_f64(new_start_time);
+        clip.end_time = clip.start_time + duration;
+        clip.track = new_track;
+
+        project.clips.push(clip.clone());
+
+        let operation = OTOperation {
+            client_id: self.client_id.clone(),
+            client_version: *self.client_version.borrow(),
+            server_version: 0,
+            operation: EditOperation::MoveClip {
+                id: clip_id.to_string(),
+                new_start_time: clip.start_time,
+                new_track,
+            },
+        };
+
+        *self.client_version.borrow_mut() += 1;
+        self.send_operation(to_value(&operation).unwrap())
+    }
+
+    #[wasm_bindgen]
+    pub fn resize_clip(&self, clip_id: &str, new_end_time: f64) -> Result<(), JsValue> {
+        let mut project = self.project.borrow_mut();
 
         let clip = project
             .clips
@@ -183,56 +187,35 @@ impl WeframeClient {
             .find(|c| c.id == clip_id)
             .ok_or_else(|| JsValue::from_str("Clip not found"))?;
 
-        let duration = clip.end_time - clip.start_time;
-        clip.start_time = std::time::Duration::from_secs_f64(new_start_time);
-        clip.end_time = clip.start_time + duration;
-        clip.track = new_track;
+        let new_end_time = std::time::Duration::from_secs_f64(new_end_time);
+        clip.end_time = new_end_time;
 
         let operation = OTOperation {
             client_id: self.client_id.clone(),
-            client_version: self.client_version,
-            server_version: 0,
-            operation: EditOperation::MoveClip {
-                id: clip_id.to_string(),
-                new_start_time: std::time::Duration::from_secs_f64(new_start_time),
-                new_track,
-            },
-        };
-
-        self.client_version += 1;
-        self.send_operation(
-            to_value(&operation)
-                .map_err(|e| JsValue::from_str(&format!("Serialization error: {:?}", e)))?,
-        )
-    }
-
-    #[wasm_bindgen]
-    pub fn resize_clip(&mut self, clip_id: String, new_end_time: f64) -> Result<(), JsValue> {
-        let operation = OTOperation {
-            client_id: self.client_id.clone(),
-            client_version: self.client_version,
+            client_version: *self.client_version.borrow(),
             server_version: 0,
             operation: EditOperation::TrimClip {
-                id: clip_id,
-                new_start_time: std::time::Duration::from_secs(0),
-                new_end_time: std::time::Duration::from_secs_f64(new_end_time),
+                id: clip_id.to_string(),
+                new_start_time: clip.start_time,
+                new_end_time,
             },
         };
-        self.client_version += 1;
+
+        *self.client_version.borrow_mut() += 1;
         self.send_operation(to_value(&operation).unwrap())
     }
 
     #[wasm_bindgen]
     pub fn add_clip(
-        &mut self,
+        &self,
         start_time: f64,
         end_time: f64,
         track: usize,
         source_file: &str,
     ) -> Result<(), JsValue> {
-        let clip_id = format!("clip-{}", uuid::Uuid::new_v4().to_string());
+        let clip_id = format!("clip-{}", Uuid::new_v4().to_string());
         let new_clip = VideoClip {
-            id: clip_id,
+            id: clip_id.clone(),
             source_file: source_file.to_string(),
             start_time: std::time::Duration::from_secs_f64(start_time),
             end_time: std::time::Duration::from_secs_f64(end_time),
@@ -243,17 +226,23 @@ impl WeframeClient {
 
         let operation = OTOperation {
             client_id: self.client_id.clone(),
-            client_version: self.client_version,
+            client_version: *self.client_version.borrow(),
             server_version: 0,
-            operation: EditOperation::AddClip(new_clip),
+            operation: EditOperation::AddClip(new_clip.clone()),
         };
-        self.client_version += 1;
-        self.send_operation(to_value(&operation).unwrap())
+
+        *self.client_version.borrow_mut() += 1;
+        self.send_operation(to_value(&operation).unwrap())?;
+
+        let mut project = self.project.borrow_mut();
+        project.clips.push(new_clip);
+
+        Ok(())
     }
 
     #[wasm_bindgen]
     pub fn apply_effect(
-        &mut self,
+        &self,
         clip_id: &str,
         effect_type: &str,
         value: f64,
@@ -270,17 +259,14 @@ impl WeframeClient {
         };
 
         let effect = Effect {
-            id: format!("effect-{}", uuid::Uuid::new_v4().to_string()),
+            id: format!("effect-{}", Uuid::new_v4().to_string()),
             effect_type,
             start_time: std::time::Duration::from_secs(0),
             end_time: std::time::Duration::from_secs(0),
             parameters: vec![("value".to_string(), value)].into_iter().collect(),
         };
 
-        let mut project = self
-            .project
-            .lock()
-            .map_err(|_| JsValue::from_str("Failed to lock project"))?;
+        let mut project = self.project.borrow_mut();
 
         let clip = project
             .clips
@@ -288,14 +274,13 @@ impl WeframeClient {
             .find(|c| c.id == clip_id)
             .ok_or_else(|| JsValue::from_str("Clip not found"))?;
 
-        // Remove existing effects of the same type
+        // Remove existing effect of the same type
         clip.effects.retain(|e| e.effect_type != effect.effect_type);
-        // Add the new effect
         clip.effects.push(effect.clone());
 
         let operation = OTOperation {
             client_id: self.client_id.clone(),
-            client_version: self.client_version,
+            client_version: *self.client_version.borrow(),
             server_version: 0,
             operation: EditOperation::AddEffect {
                 clip_id: clip_id.to_string(),
@@ -303,10 +288,7 @@ impl WeframeClient {
             },
         };
 
-        self.client_version += 1;
-        self.send_operation(
-            to_value(&operation)
-                .map_err(|e| JsValue::from_str(&format!("Serialization error: {:?}", e)))?,
-        )
+        *self.client_version.borrow_mut() += 1;
+        self.send_operation(to_value(&operation).unwrap())
     }
 }

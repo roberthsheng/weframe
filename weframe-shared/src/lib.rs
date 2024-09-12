@@ -1,6 +1,7 @@
 // weframe-shared/src/lib.rs
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use std::default::Default;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoClip {
@@ -108,6 +109,16 @@ pub struct OTOperation {
     pub client_version: usize,
     pub server_version: usize,
     pub operation: EditOperation,
+}
+
+impl Default for VideoProject {
+    fn default() -> Self {
+        VideoProject {
+            clips: Vec::new(),
+            duration: Duration::from_secs(300),
+            collaborators: Vec::new(),
+        }
+    }
 }
 
 impl VideoProject {

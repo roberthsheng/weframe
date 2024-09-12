@@ -33,11 +33,7 @@ impl SessionManager {
             .or_insert_with(|| {
                 Arc::new(RwLock::new(Session {
                     clients: HashMap::new(),
-                    project: VideoProject {
-                        clips: Vec::new(),
-                        duration: Duration::from_secs(300),
-                        collaborators: Vec::new(),
-                    },
+                    project: VideoProject::default(),
                     server_version: 0,
                     last_activity: Instant::now(),
                 }))
@@ -117,9 +113,18 @@ pub async fn handle_websocket(
 
                             // handle specific operation types
                             match &transformed_op.operation {
+                                // Inside the match statement for handling operations
                                 EditOperation::UpdateCollaboratorCursor { collaborator_id, new_position } => {
-                                    if let Some(collaborator) = session.project.collaborators.iter_mut().find(|c| c.id == *collaborator_id) {
+                                    if let Some(collaborator) = session.project.collaborators.iter_mut().find(|c| &c.id == collaborator_id) {
                                         collaborator.cursor_position = new_position.clone();
+                                    }
+
+                                    // Broadcast the cursor update to all clients except the sender
+                                    let cursor_update_msg = serde_json::to_string(&transformed_op).unwrap();
+                                    for (client_id, sender) in &session.clients {
+                                        if client_id != &transformed_op.client_id {
+                                            let _ = sender.send(Message::text(cursor_update_msg.clone()));
+                                        }
                                     }
                                 },
                                 _ => {},

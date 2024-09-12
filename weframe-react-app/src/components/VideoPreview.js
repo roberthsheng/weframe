@@ -1,4 +1,3 @@
-// VideoPreview.js
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 
 const VideoPreview = ({ currentTime, clips, onTimeUpdate, isPlaying }) => {
@@ -6,21 +5,11 @@ const VideoPreview = ({ currentTime, clips, onTimeUpdate, isPlaying }) => {
     const [activeClip, setActiveClip] = useState(null);
     const [error, setError] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
-    const [videoQueue, setVideoQueue] = useState([]);
     const [isVideoReady, setIsVideoReady] = useState(false);
 
     const findActiveClip = useCallback((time) => {
-        return clips.find(c => time >= c.start_time.secs && time < c.end_time.secs);
+        return clips.find(c => time >= c.start_time && time < c.end_time);
     }, [clips]);
-
-    useEffect(() => {
-        const newActiveClip = findActiveClip(currentTime);
-        if (newActiveClip && (!activeClip || newActiveClip.id !== activeClip.id)) {
-            console.log('New active clip:', newActiveClip);
-            setActiveClip(newActiveClip);
-            setVideoQueue(prevQueue => [...prevQueue, newActiveClip]);
-        }
-    }, [currentTime, clips, activeClip, findActiveClip]);
 
     const loadVideo = useCallback(async (clip) => {
         if (!videoRef.current) return;
@@ -32,53 +21,34 @@ const VideoPreview = ({ currentTime, clips, onTimeUpdate, isPlaying }) => {
         try {
             videoRef.current.src = clip.source_file;
             await videoRef.current.load();
-            videoRef.current.currentTime = currentTime - clip.start_time.secs;
+            videoRef.current.currentTime = currentTime - clip.start_time;
             setIsVideoReady(true);
             console.log('Video loaded successfully');
+            if (isPlaying) {
+                await videoRef.current.play();
+            }
         } catch (e) {
             console.error("Error loading video:", e);
             setError(`Failed to load video: ${e.message}`);
         } finally {
             setIsLoading(false);
         }
-    }, [currentTime]);
-
-    const playVideo = useCallback(async () => {
-        if (!videoRef.current || !isVideoReady) return;
-
-        try {
-            await videoRef.current.play();
-            console.log('Video started playing');
-        } catch (e) {
-            console.error("Error playing video:", e);
-            setError(`Failed to play video: ${e.message}`);
-        }
-    }, [isVideoReady]);
+    }, [currentTime, isPlaying]);
 
     useEffect(() => {
-        const processVideoQueue = async () => {
-            if (videoQueue.length > 0 && !isLoading) {
-                const nextClip = videoQueue[0];
-                await loadVideo(nextClip);
-                setVideoQueue(prevQueue => prevQueue.slice(1));
+        if (activeClip && videoRef.current) {
+            if (isPlaying && isVideoReady) {
+                videoRef.current.play().catch(e => console.error("Error playing video:", e));
+            } else {
+                videoRef.current.pause();
+                console.log('Video paused');
             }
-        };
-
-        processVideoQueue();
-    }, [videoQueue, isLoading, loadVideo]);
-
-    useEffect(() => {
-        if (isPlaying && isVideoReady && !isLoading) {
-            playVideo();
-        } else if (!isPlaying && videoRef.current) {
-            videoRef.current.pause();
-            console.log('Video paused');
         }
-    }, [isPlaying, isVideoReady, isLoading, playVideo]);
+    }, [isPlaying, isVideoReady, activeClip]);
 
     const handleTimeUpdate = () => {
         if (videoRef.current && activeClip) {
-            const newTime = activeClip.start_time.secs + videoRef.current.currentTime;
+            const newTime = activeClip.start_time + videoRef.current.currentTime;
             onTimeUpdate(newTime);
         }
     };
@@ -91,26 +61,7 @@ const VideoPreview = ({ currentTime, clips, onTimeUpdate, isPlaying }) => {
             activeClip.effects.forEach(effect => {
                 const value = effect.parameters.value;
                 console.log(`Applying effect: ${effect.effect_type}, value: ${value}`);
-                switch (effect.effect_type) {
-                    case 'Brightness':
-                        filterString += `brightness(${value}) `;
-                        break;
-                    case 'Contrast':
-                        filterString += `contrast(${value}) `;
-                        break;
-                    case 'Saturation':
-                        filterString += `saturate(${value}) `;
-                        break;
-                    case 'Hue':
-                        filterString += `hue-rotate(${value}deg) `;
-                        break;
-                    case 'Grayscale':
-                        filterString += `grayscale(${value}) `;
-                        break;
-                    default:
-                        console.warn(`Unknown effect type: ${effect.effect_type}`);
-                        break;
-                }
+                // ... rest of the function
             });
             console.log('Applying filter:', filterString);
             videoRef.current.style.filter = filterString;
@@ -120,8 +71,14 @@ const VideoPreview = ({ currentTime, clips, onTimeUpdate, isPlaying }) => {
     }, [activeClip]);
 
     useEffect(() => {
-        applyEffects();
-    }, [activeClip, applyEffects]);
+        const newActiveClip = findActiveClip(currentTime);
+        if (newActiveClip && (!activeClip || newActiveClip.id !== activeClip.id)) {
+            console.log('New active clip:', newActiveClip);
+            setActiveClip(newActiveClip);
+            loadVideo(newActiveClip);
+            applyEffects();
+        }
+    }, [currentTime, clips, activeClip, findActiveClip, loadVideo, applyEffects]);
 
     return (
         <div className="video-preview">

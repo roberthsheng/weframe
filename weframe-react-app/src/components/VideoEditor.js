@@ -18,30 +18,79 @@ const VideoEditor = () => {
     const [resizingClip, setResizingClip] = useState(null);
     const [currentTime, setCurrentTime] = useState(0);
     const [isPlaying, setIsPlaying] = useState(false);
+    const wsRef = useRef(null);
     const timelineRef = useRef(null);
     const playIntervalRef = useRef(null);
 
     const updateProject = useCallback((clientInstance) => {
-        const projectData = clientInstance.get_project();
-        console.log('Received project data:', projectData);
-        setProject(prevProject => {
-            if (!_.isEqual(prevProject, projectData)) {
-                return projectData;
-            }
-            return prevProject;
-        });
+        try {
+            const projectData = clientInstance.get_project();
+            console.log('Received project data:', projectData);
+            setProject(prevProject => {
+                if (!_.isEqual(prevProject, projectData)) {
+                    return projectData;
+                }
+                return prevProject;
+            });
+        } catch (error) {
+            console.error("Failed to get project data:", error);
+        }
     }, []);
 
+    const handleMessage = useCallback((event) => {
+        const operation = JSON.parse(event.data);
+        console.log('Received operation:', operation);
+        if (operation.operation.UpdateCollaboratorCursor) {
+            const { collaborator_id, new_position } = operation.operation.UpdateCollaboratorCursor;
+            setProject(prevProject => ({
+                ...prevProject,
+                collaborators: prevProject.collaborators.map(c =>
+                    c.id === collaborator_id ? { ...c, cursor_position: new_position } : c
+                )
+            }));
+        } else {
+            updateProject(client);
+        }
+    }, [client, updateProject]);
+
     useEffect(() => {
-        init().then(() => {
-            console.log("WebAssembly module initialized successfully");
-            const newClient = new WeframeClient('ws://localhost:3030/ws/default-session', 'user1', 'User 1');
-            setClient(newClient);
-            updateProject(newClient);
-        }).catch(error => {
-            console.error("Failed to initialize WebAssembly module:", error);
-        });
-    }, [updateProject]);
+        const initializeApp = async () => {
+            try {
+                await init();
+                console.log("WebAssembly module initialized successfully");
+                const ws = new WebSocket('ws://localhost:3030/ws/default-session');
+
+                ws.onopen = () => {
+                    console.log('WebSocket connected successfully');
+                    const newClient = new WeframeClient('ws://localhost:3030/ws/default-session', 'user1', 'User 1');
+                    setClient(newClient);
+                    updateProject(newClient);
+                };
+
+                ws.onmessage = handleMessage;
+
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                };
+
+                ws.onclose = (event) => {
+                    console.log('WebSocket closed:', event.code, event.reason);
+                };
+
+                wsRef.current = ws;
+            } catch (error) {
+                console.error("Failed to initialize:", error);
+            }
+        };
+
+        initializeApp();
+
+        return () => {
+            if (wsRef.current) {
+                wsRef.current.close();
+            }
+        };
+    }, []);
 
     const addClip = useCallback(() => {
         if (client) {
@@ -95,7 +144,7 @@ const VideoEditor = () => {
         if (draggingClip) {
             const dx = e.clientX - draggingClip.initialX;
             const dy = e.clientY - draggingClip.initialY;
-            const newStartTime = draggingClip.clip.start_time.secs + dx / PIXELS_PER_SECOND;
+            const newStartTime = draggingClip.clip.start_time + dx / PIXELS_PER_SECOND;
             const newTrack = Math.max(0, Math.min(2, draggingClip.clip.track + Math.round(dy / TRACK_HEIGHT)));
 
             setProject(prevProject => ({
@@ -211,8 +260,8 @@ const VideoEditor = () => {
                                 style={{
                                     position: 'absolute',
                                     top: `${clip.track * TRACK_HEIGHT}px`,
-                                    left: `${clip.start_time.secs * PIXELS_PER_SECOND}px`,
-                                    width: `${(clip.end_time.secs - clip.start_time.secs) * PIXELS_PER_SECOND}px`,
+                                    left: `${clip.start_time * PIXELS_PER_SECOND}px`,
+                                    width: `${(clip.end_time - clip.start_time) * PIXELS_PER_SECOND}px`,
                                     height: `${TRACK_HEIGHT - 2}px`,
                                     backgroundColor: 'lightblue',
                                     border: '1px solid blue',
