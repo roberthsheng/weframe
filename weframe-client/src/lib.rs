@@ -1,15 +1,14 @@
-use js_sys::Object;
-use serde_wasm_bindgen::{from_value, to_value};
+use js_sys::global;
+use serde_wasm_bindgen::to_value;
 use std::cell::RefCell;
 use std::rc::Rc;
 use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 use web_sys::{console, MessageEvent, WebSocket};
 use weframe_shared::{
-    Collaborator, CursorPosition, EditOperation, Effect, EffectType, OTOperation, VideoClip,
+    CursorPosition, EditOperation, Effect, EffectType, OTOperation, ServerMessage, VideoClip,
     VideoProject,
 };
-
 #[wasm_bindgen]
 pub struct WeframeClient {
     ws: WebSocket,
@@ -22,30 +21,14 @@ pub struct WeframeClient {
 impl WeframeClient {
     #[wasm_bindgen(constructor)]
     pub fn new(ws_url: &str, client_id: &str, client_name: &str) -> Result<WeframeClient, JsValue> {
-        console::log_1(&JsValue::from_str(&format!(
-            "Attempting to connect to WebSocket at {}",
-            ws_url
+        console::log_1(&JsValue::from_str("Creating new WeframeClient"));
+        let ws = WebSocket::new(ws_url)?;
+        let project = Rc::new(RefCell::new(VideoProject::new(
+            uuid::Uuid::new_v4().to_string(),
+            "New Project".to_string(),
+            client_id.to_string(),
+            client_name.to_string(),
         )));
-        let ws = WebSocket::new(ws_url).map_err(|e| {
-            console::error_1(&JsValue::from_str(&format!(
-                "Failed to create WebSocket: {:?}",
-                e
-            )));
-            e
-        })?;
-
-        let project = Rc::new(RefCell::new(VideoProject {
-            clips: Vec::new(),
-            duration: std::time::Duration::from_secs(300),
-            collaborators: vec![Collaborator {
-                id: client_id.to_string(),
-                name: client_name.to_string(),
-                cursor_position: CursorPosition {
-                    track: 0,
-                    time: std::time::Duration::from_secs(0),
-                },
-            }],
-        }));
 
         let client = WeframeClient {
             ws,
@@ -55,58 +38,71 @@ impl WeframeClient {
         };
 
         client.setup_ws_handlers();
-
         Ok(client)
     }
 
     fn setup_ws_handlers(&self) {
         let project = self.project.clone();
+        let client_version = self.client_version.clone();
         let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
-            let data = e.data().as_string().unwrap();
-            let operation: OTOperation = serde_json::from_str(&data).unwrap();
-            console::log_1(&JsValue::from_str(&format!(
-                "Received operation: {:?}",
-                operation
-            )));
-            // Apply the operation to the local project state
-            let mut project = project.borrow_mut();
-            project.apply_operation(&operation.operation);
+            if let Ok(txt) = e.data().dyn_into::<js_sys::JsString>() {
+                let txt_string = txt.as_string().unwrap();
+                match serde_json::from_str::<ServerMessage>(&txt_string) {
+                    Ok(ServerMessage::ClientOperation(operation)) => {
+                        console::log_1(&JsValue::from_str(&format!(
+                            "Received operation: {:?}",
+                            operation
+                        )));
+                        let mut project = project.borrow_mut();
+                        project.apply_operation(&operation.operation);
+                        *client_version.borrow_mut() = operation.server_version;
+
+                        // Use js_sys::global() to access the global object
+                        let global = global();
+                        if let Some(post_message) =
+                            js_sys::Reflect::get(&global, &JsValue::from_str("postMessage")).ok()
+                        {
+                            if let Some(post_message_func) =
+                                post_message.dyn_ref::<js_sys::Function>()
+                            {
+                                let _ = post_message_func.call2(
+                                    &global,
+                                    &JsValue::from_str(&txt_string),
+                                    &JsValue::from_str("*"),
+                                );
+                            }
+                        }
+                    }
+                    Ok(other_message) => {
+                        console::log_1(&JsValue::from_str(&format!(
+                            "Received other message: {:?}",
+                            other_message
+                        )));
+                    }
+                    Err(e) => {
+                        console::error_1(&JsValue::from_str(&format!(
+                            "Failed to parse message: {:?}",
+                            e
+                        )));
+                    }
+                }
+            }
         }) as Box<dyn FnMut(_)>);
         self.ws
             .set_onmessage(Some(onmessage_callback.as_ref().unchecked_ref()));
         onmessage_callback.forget();
-
-        // Update error handling
-        let onerror_callback = Closure::wrap(Box::new(move |e: JsValue| {
-            let error_obj = Object::from(e);
-            let error_message = js_sys::Reflect::get(&error_obj, &JsValue::from_str("message"))
-                .unwrap_or(JsValue::from_str("Unknown error"));
-            console::error_1(&JsValue::from_str(&format!(
-                "WebSocket error: {:?}",
-                error_message
-            )));
-        }) as Box<dyn FnMut(_)>);
-        self.ws
-            .set_onerror(Some(onerror_callback.as_ref().unchecked_ref()));
-        onerror_callback.forget();
     }
 
-    pub fn send_operation(&self, operation: JsValue) -> Result<(), JsValue> {
-        let operation: OTOperation = from_value(operation)
-            .map_err(|e| JsValue::from_str(&format!("Failed to parse operation: {:?}", e)))?;
-        {
-            let mut project = self.project.borrow_mut();
-            project.apply_operation(&operation.operation);
-        }
-
+    fn send_operation(&self, operation: &OTOperation) -> Result<(), JsValue> {
         let message = serde_json::to_string(&operation)
             .map_err(|e| JsValue::from_str(&format!("Failed to serialize operation: {:?}", e)))?;
         self.ws.send_with_str(&message)
     }
 
-    pub fn get_project(&self) -> JsValue {
+    #[wasm_bindgen]
+    pub fn get_project(&self) -> Result<JsValue, JsValue> {
         let project = self.project.borrow();
-        to_value(&*project).unwrap()
+        to_value(&*project).map_err(|e| JsValue::from_str(&format!("Serialization error: {:?}", e)))
     }
 
     #[wasm_bindgen]
@@ -136,7 +132,12 @@ impl WeframeClient {
         };
 
         *self.client_version.borrow_mut() += 1;
-        self.send_operation(to_value(&operation).unwrap())
+        self.send_operation(&operation).map_err(|e| {
+            JsValue::from_str(&format!(
+                "Failed to send update_cursor_position operation: {:?}",
+                e
+            ))
+        })
     }
 
     #[wasm_bindgen]
@@ -146,21 +147,20 @@ impl WeframeClient {
         new_start_time: f64,
         new_track: usize,
     ) -> Result<(), JsValue> {
+        console::log_1(&JsValue::from_str(&format!(
+            "Moving clip {} to start time {} and track {}",
+            clip_id, new_start_time, new_track
+        )));
         let mut project = self.project.borrow_mut();
-
         let clip_index = project
             .clips
             .iter()
             .position(|c| c.id == clip_id)
             .ok_or_else(|| JsValue::from_str("Clip not found"))?;
-
         let mut clip = project.clips.remove(clip_index);
-        let duration = clip.end_time - clip.start_time;
         clip.start_time = std::time::Duration::from_secs_f64(new_start_time);
-        clip.end_time = clip.start_time + duration;
         clip.track = new_track;
-
-        project.clips.push(clip.clone());
+        project.clips.push(clip);
 
         let operation = OTOperation {
             client_id: self.client_id.clone(),
@@ -168,13 +168,13 @@ impl WeframeClient {
             server_version: 0,
             operation: EditOperation::MoveClip {
                 id: clip_id.to_string(),
-                new_start_time: clip.start_time,
+                new_start_time: std::time::Duration::from_secs_f64(new_start_time),
                 new_track,
             },
         };
 
         *self.client_version.borrow_mut() += 1;
-        self.send_operation(to_value(&operation).unwrap())
+        self.send_operation(&operation)
     }
 
     #[wasm_bindgen]
@@ -202,7 +202,7 @@ impl WeframeClient {
         };
 
         *self.client_version.borrow_mut() += 1;
-        self.send_operation(to_value(&operation).unwrap())
+        self.send_operation(&operation)
     }
 
     #[wasm_bindgen]
@@ -232,7 +232,7 @@ impl WeframeClient {
         };
 
         *self.client_version.borrow_mut() += 1;
-        self.send_operation(to_value(&operation).unwrap())?;
+        self.send_operation(&operation)?;
 
         let mut project = self.project.borrow_mut();
         project.clips.push(new_clip);
@@ -247,7 +247,10 @@ impl WeframeClient {
         effect_type: &str,
         value: f64,
     ) -> Result<(), JsValue> {
-        console::log_1(&JsValue::from_str("apply_effect called from JavaScript"));
+        console::log_1(&JsValue::from_str(&format!(
+            "Applying effect: {} with value {} to clip {}",
+            effect_type, value, clip_id
+        )));
 
         let effect_type = match effect_type {
             "brightness" => EffectType::Brightness,
@@ -258,13 +261,7 @@ impl WeframeClient {
             _ => return Err(JsValue::from_str("Unsupported effect type")),
         };
 
-        let effect = Effect {
-            id: format!("effect-{}", Uuid::new_v4().to_string()),
-            effect_type,
-            start_time: std::time::Duration::from_secs(0),
-            end_time: std::time::Duration::from_secs(0),
-            parameters: vec![("value".to_string(), value)].into_iter().collect(),
-        };
+        let effect = Effect::new(effect_type, value);
 
         let mut project = self.project.borrow_mut();
 
@@ -289,6 +286,26 @@ impl WeframeClient {
         };
 
         *self.client_version.borrow_mut() += 1;
-        self.send_operation(to_value(&operation).unwrap())
+        self.send_operation(&operation).map_err(|e| {
+            JsValue::from_str(&format!("Failed to send apply_effect operation: {:?}", e))
+        })
+    }
+
+    #[wasm_bindgen]
+    pub fn rename_project(&self, new_name: &str) -> Result<(), JsValue> {
+        let operation = OTOperation {
+            client_id: self.client_id.clone(),
+            client_version: *self.client_version.borrow(),
+            server_version: 0,
+            operation: EditOperation::RenameProject(new_name.to_string()),
+        };
+
+        *self.client_version.borrow_mut() += 1;
+        self.send_operation(&operation)?;
+
+        let mut project = self.project.borrow_mut();
+        project.name = new_name.to_string();
+
+        Ok(())
     }
 }

@@ -1,7 +1,7 @@
-// weframe-shared/src/lib.rs
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Duration;
-use std::default::Default;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoClip {
@@ -20,7 +20,21 @@ pub struct Effect {
     pub effect_type: EffectType,
     pub start_time: Duration,
     pub end_time: Duration,
-    pub parameters: std::collections::HashMap<String, f64>,
+    pub parameters: HashMap<String, f64>,
+}
+
+impl Effect {
+    pub fn new(effect_type: EffectType, value: f64) -> Self {
+        let mut parameters = HashMap::new();
+        parameters.insert("value".to_string(), value);
+        Self {
+            id: format!("effect-{}", Uuid::new_v4().to_string()),
+            effect_type,
+            start_time: Duration::from_secs(0),
+            end_time: Duration::from_secs(0),
+            parameters,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -30,6 +44,18 @@ pub enum EffectType {
     Saturation,
     Hue,
     Grayscale,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ServerMessage {
+    ClientOperation(OTOperation),
+    NewClient { client_id: String, name: String },
+    ClientDisconnected(String),
+    ProjectUpdate(VideoProject),
+    ChatMessage { client_id: String, message: String },
+    Error { client_id: String, message: String },
+    Ping(u64),
+    Pong(u64),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,11 +70,12 @@ pub enum TransitionType {
     Fade,
     Wipe,
     Dissolve,
-    // etc
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoProject {
+    pub id: String,
+    pub name: String,
     pub clips: Vec<VideoClip>,
     pub duration: Duration,
     pub collaborators: Vec<Collaborator>,
@@ -101,6 +128,9 @@ pub enum EditOperation {
         collaborator_id: String,
         new_position: CursorPosition,
     },
+    RenameProject(String),
+    AddCollaborator(Collaborator),
+    RemoveCollaborator(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,17 +141,24 @@ pub struct OTOperation {
     pub operation: EditOperation,
 }
 
-impl Default for VideoProject {
-    fn default() -> Self {
+impl VideoProject {
+    pub fn new(id: String, name: String, client_id: String, client_name: String) -> Self {
         VideoProject {
+            id,
+            name,
             clips: Vec::new(),
             duration: Duration::from_secs(300),
-            collaborators: Vec::new(),
+            collaborators: vec![Collaborator {
+                id: client_id,
+                name: client_name,
+                cursor_position: CursorPosition {
+                    track: 0,
+                    time: Duration::from_secs(0),
+                },
+            }],
         }
     }
-}
 
-impl VideoProject {
     pub fn apply_operation(&mut self, op: &EditOperation) {
         match op {
             EditOperation::AddClip(clip) => self.clips.push(clip.clone()),
@@ -186,109 +223,29 @@ impl VideoProject {
                     collaborator.cursor_position = new_position.clone();
                 }
             }
+            EditOperation::RenameProject(new_name) => {
+                self.name = new_name.clone();
+            }
+            EditOperation::AddCollaborator(collaborator) => {
+                self.collaborators.push(collaborator.clone());
+            }
+            EditOperation::RemoveCollaborator(collaborator_id) => {
+                self.collaborators.retain(|c| c.id != *collaborator_id);
+            }
         }
     }
 
     pub fn transform_operation(
         &self,
-        server_op: &OTOperation,
         client_op: &OTOperation,
+        server_version: usize,
     ) -> OTOperation {
-        match (&server_op.operation, &client_op.operation) {
-            (EditOperation::AddClip(server_clip), EditOperation::AddClip(client_clip)) => {
-                if server_op.client_id < client_op.client_id {
-                    OTOperation {
-                        client_id: client_op.client_id.clone(),
-                        client_version: client_op.client_version,
-                        server_version: server_op.server_version + 1,
-                        operation: EditOperation::AddClip(VideoClip {
-                            start_time: client_clip.start_time + server_clip.end_time
-                                - server_clip.start_time,
-                            ..client_clip.clone()
-                        }),
-                    }
-                } else {
-                    client_op.clone()
-                }
-            }
-            (EditOperation::RemoveClip(server_id), EditOperation::RemoveClip(client_id)) => {
-                if server_id == client_id {
-                    OTOperation {
-                        client_id: client_op.client_id.clone(),
-                        client_version: client_op.client_version,
-                        server_version: server_op.server_version,
-                        operation: EditOperation::RemoveClip(client_id.clone()),
-                    }
-                } else {
-                    client_op.clone()
-                }
-            }
-            (
-                EditOperation::MoveClip { id: server_id, .. },
-                EditOperation::MoveClip { id: client_id, .. },
-            ) => {
-                if server_id == client_id {
-                    server_op.clone()
-                } else {
-                    client_op.clone()
-                }
-            }
-            (
-                EditOperation::AddEffect {
-                    clip_id: server_clip_id,
-                    effect: _server_effect,
-                },
-                EditOperation::AddEffect {
-                    clip_id: client_clip_id,
-                    effect: _client_effect,
-                },
-            ) => {
-                if server_clip_id == client_clip_id {
-                    // If both operations are adding an effect to the same clip, keep the client's effect
-                    client_op.clone()
-                } else {
-                    // If they're for different clips, both effects can be applied
-                    server_op.clone()
-                }
-            }
-            (
-                EditOperation::TrimClip { id: server_id, .. },
-                EditOperation::TrimClip { id: client_id, .. },
-            ) => {
-                if server_id == client_id {
-                    let (_, server_start, server_end) = server_op.operation.as_trim_clip();
-                    let (_, client_start, client_end) = client_op.operation.as_trim_clip();
-                    OTOperation {
-                        client_id: client_op.client_id.clone(),
-                        client_version: client_op.client_version,
-                        server_version: server_op.server_version,
-                        operation: EditOperation::TrimClip {
-                            id: client_id.clone(),
-                            new_start_time: std::cmp::max(*server_start, *client_start),
-                            new_end_time: std::cmp::min(*server_end, *client_end),
-                        },
-                    }
-                } else {
-                    client_op.clone()
-                }
-            }
-            (EditOperation::SetProjectDuration(_), EditOperation::SetProjectDuration(_)) => {
-                server_op.clone()
-            }
-            _ => client_op.clone(),
-        }
-    }
-}
+        let mut transformed_op = client_op.clone();
+        transformed_op.server_version = server_version;
 
-impl EditOperation {
-    fn as_trim_clip(&self) -> (&String, &Duration, &Duration) {
-        match self {
-            EditOperation::TrimClip {
-                id,
-                new_start_time,
-                new_end_time,
-            } => (id, new_start_time, new_end_time),
-            _ => panic!("Called as_trim_clip on non-TrimClip operation"),
-        }
+        // Implement more sophisticated transformation logic here if needed
+        // This is a simplified version that just updates the server version
+
+        transformed_op
     }
 }

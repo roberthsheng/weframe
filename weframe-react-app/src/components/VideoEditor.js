@@ -23,33 +23,38 @@ const VideoEditor = () => {
     const playIntervalRef = useRef(null);
 
     const updateProject = useCallback((clientInstance) => {
-        try {
-            const projectData = clientInstance.get_project();
-            console.log('Received project data:', projectData);
-            setProject(prevProject => {
-                if (!_.isEqual(prevProject, projectData)) {
-                    return projectData;
-                }
-                return prevProject;
-            });
-        } catch (error) {
-            console.error("Failed to get project data:", error);
+        if (clientInstance) {
+            try {
+                const projectData = clientInstance.get_project();
+                console.log('Received project data:', projectData);
+                setProject(prevProject => {
+                    if (!_.isEqual(prevProject, projectData)) {
+                        return projectData;
+                    }
+                    return prevProject;
+                });
+            } catch (error) {
+                console.error("Failed to get project data:", error);
+            }
+        } else {
+            console.warn("Client is not initialized");
         }
     }, []);
 
     const handleMessage = useCallback((event) => {
-        const operation = JSON.parse(event.data);
-        console.log('Received operation:', operation);
-        if (operation.operation.UpdateCollaboratorCursor) {
-            const { collaborator_id, new_position } = operation.operation.UpdateCollaboratorCursor;
-            setProject(prevProject => ({
-                ...prevProject,
-                collaborators: prevProject.collaborators.map(c =>
-                    c.id === collaborator_id ? { ...c, cursor_position: new_position } : c
-                )
-            }));
-        } else {
+        const message = JSON.parse(event.data);
+        console.log('Received message:', message);
+
+        if (message.ClientOperation) {
+            const operation = message.ClientOperation;
+            console.log('Received operation:', operation);
             updateProject(client);
+        } else if (message.NewClient) {
+            console.log('New client joined:', message.NewClient);
+        } else if (message.ClientDisconnected) {
+            console.log('Client disconnected:', message.ClientDisconnected);
+        } else {
+            console.log('Unhandled message type:', message);
         }
     }, [client, updateProject]);
 
@@ -84,13 +89,11 @@ const VideoEditor = () => {
         };
 
         initializeApp();
-
-        return () => {
-            if (wsRef.current) {
-                wsRef.current.close();
-            }
-        };
     }, []);
+
+    useEffect(() => {
+        console.log("Current project state:", project);
+    }, [project]);
 
     const addClip = useCallback(() => {
         if (client) {
@@ -200,11 +203,15 @@ const VideoEditor = () => {
     }, [client, draggingClip, resizingClip, project.clips, updateProject]);
 
     const handleTimeUpdate = (newTime) => {
+        console.log("Time updated:", newTime);
         setCurrentTime(newTime);
     };
 
     const togglePlayPause = () => {
-        setIsPlaying(prevIsPlaying => !prevIsPlaying);
+        setIsPlaying(prevIsPlaying => {
+            console.log("Toggling play/pause:", !prevIsPlaying);
+            return !prevIsPlaying;
+        });
     };
 
     useEffect(() => {
@@ -239,11 +246,42 @@ const VideoEditor = () => {
                 client.apply_effect(clipId, effectType, value);
                 console.log('Effect applied successfully, updating project');
                 updateProject(client);
+                console.log('Updated project state:', client.get_project());
             } catch (error) {
                 console.error("Failed to apply effect:", error);
             }
         } else {
             console.error("Client is not initialized");
+        }
+    }, [client, updateProject]);
+
+    useEffect(() => {
+        if (client) {
+            const handleServerMessage = (event) => {
+                if (event.origin === window.location.origin) {
+                    try {
+                        const message = JSON.parse(event.data);
+                        if (message.ClientOperation) {
+                            console.log('Received operation from server:', message.ClientOperation);
+                            updateProject(client);
+                        }
+                    } catch (error) {
+                        console.error('Error parsing message:', error);
+                    }
+                }
+            };
+
+            window.addEventListener('message', handleServerMessage);
+
+            // Set up a timer to periodically check for updates
+            const intervalId = setInterval(() => {
+                updateProject(client);
+            }, 1000); // Check every second
+
+            return () => {
+                window.removeEventListener('message', handleServerMessage);
+                clearInterval(intervalId);
+            };
         }
     }, [client, updateProject]);
 
